@@ -1,0 +1,270 @@
+// 1. Suspicious PowerShell Execution
+event_simpleName=ProcessRollup2 FileName="powershell.exe"
+| CommandLine=/* -e */ OR CommandLine=/* -enc */ OR CommandLine=/* -EncodedCommand */
+| table ComputerName UserName CommandLine ParentBaseFileName
+// Detects obfuscated PowerShell commands
+
+// 2. Malware in Temp Locations
+event_simpleName=PeFileWritten 
+| FilePath=/*\\AppData\\Local\\Temp\\*/ OR FilePath=/*\\Windows\\Temp\\*/
+| FileName=/*.exe/ OR FileName=/*.dll/
+| table ComputerName FileName FilePath SHA256HashData
+// Finds executables in temp folders
+
+// 3. Ransomware File Renames
+event_simpleName=FileRename 
+| NewFileName=/*.encrypted/ OR NewFileName=/*.locked/ OR NewFileName=/*.crypt/
+| group_by(ComputerName, OldFileName, NewFileName), count() 
+| where(count > 20)
+// Mass file extension changes
+
+// 4. Unusual Service Creation
+event_simpleName=ServiceStart 
+| ServiceType="service"
+| ImagePath=/*temp*/ OR ImagePath=/*tmp*/ OR ImagePath=/*AppData*/
+| table ComputerName ServiceName ImagePath
+// Non-standard service binaries
+
+// 5. LSASS Memory Access
+event_simpleName=ProcessRollup2 FileName="lsass.exe"
+| ParentBaseFileName=/(procdump|sqldumper|rundll32|powershell).exe/
+| table ComputerName UserName ParentBaseFileName
+// Credential dumping detection
+
+// 6. Scheduled Task Persistence
+event_simpleName=SchTaskRegistered
+| CommandLine=/*schtasks*/ OR CommandLine=/*Register-ScheduledTask*/
+| ParentBaseFileName!=/taskeng.exe/
+| table ComputerName CommandLine UserName
+// Unauthorized task creation
+
+// 7. HTTP Beaconing Patterns
+event_simpleName=NetworkConnect RemotePort=80 OR RemotePort=443
+| group_by(ComputerName, RemoteIP), 
+  count() AS ConnectionCount, 
+  min(ContextTimeStamp) AS FirstCall, 
+  max(ContextTimeStamp) AS LastCall
+| ConnectionCount > 50
+| duration(FirstCall, LastCall) > 3600
+// Repeating external connections
+
+// 8. Registry Run Key Modifications
+event_simpleName=RegMod 
+| RegPath=/*\\Run\\*/ OR RegPath=/*\\RunOnce\\*/
+| table ComputerName RegValueName RegValueData
+// Persistence mechanism changes
+
+// 9. Pass-the-Hash Activity
+event_simpleName=UserLogon LogonType=3
+| ParentBaseFileName=/(psexec|wmic|cscript).exe/
+| table ComputerName UserName RemoteIP
+// NTLM network logons with admin tools
+
+// 10. RDP to High-Risk Countries
+event_simpleName=NetworkConnect RemotePort=3389
+| Country!=/(US|CA|UK|AU|DE)/
+| table ComputerName RemoteIP Country
+// External RDP to untrusted locations
+
+// 11. Cryptomining Connections
+event_simpleName=DnsRequest 
+| DomainName=/(xmrpool|ethermine|f2pool|nanopool)/
+| table ComputerName DomainName
+// Mining pool DNS requests
+
+// 12. Security Feature Tampering
+event_simpleName=ProcessRollup2 
+| CommandLine=/(DisableRealtimeMonitoring|Set-MpPreference -Disable|Add-Exclusion)/
+| table ComputerName CommandLine
+// AV/EDR disable attempts
+
+// 13. WMI Event Subscription
+event_simpleName=WmiEventFilter
+| CommandLine!="wmiprvse.exe"
+| table ComputerName CommandLine
+// WMI-based persistence
+
+// 14. Large Cloud Uploads
+event_simpleName=NetworkConnect 
+| RemoteURL=/(onedrive|dropbox|googleapis)/
+| TotalBytesWritten > 500000000
+| table ComputerName RemoteURL TotalBytesWritten
+// 500MB+ cloud uploads
+
+// 15. Anomalous DNS Requests
+event_simpleName=DnsRequest 
+| DomainName=/(dyn|ddns|no-ip)/
+| length(DomainName) > 40
+| table ComputerName DomainName
+// Dynamic DNS with long domains
+
+// 16. Critical Vulnerabilities (via Spotlight)
+event_simpleName=VulnerableApp Severity="CRITICAL"
+| Exploitability="HIGH"
+| table ComputerName AppName CVEID
+// Exploitable vulnerabilities
+
+// 17. Internet-Exposed SMB
+event_simpleName=NetworkListen LocalPort=445
+| RemoteAddressIPType="External"
+| table ComputerName LocalAddressIP4
+// SMB open to internet
+
+// 18. Weak Authentication Logons
+event_simpleName=UserLogon 
+| LogonProtocol=/(NTLMv1|LM)/
+| table ComputerName UserName LogonProtocol
+// Legacy auth protocols
+
+// 19. New Startup Items
+event_simpleName=RegMod RegPath=/*\\Run*/
+| ContextTimeStamp > now() - 7d
+| table ComputerName RegValueName RegValueData
+// Recent autorun changes
+
+// 20. Lateral Movement Tools
+event_simpleName=ProcessRollup2 
+| ParentBaseFileName=/(psexec|wmic|powershell).exe/
+| CommandLine=/\\\\.*/
+| table ComputerName CommandLine
+// Network admin tool usage
+
+// 21. Office Macro Execution
+event_simpleName=ProcessRollup2 
+| ParentBaseFileName=/(WINWORD|EXCEL|POWERPNT).EXE/
+| FileName=/(cmd|powershell|wscript).exe/
+| table ComputerName ParentBaseFileName FileName
+// Office spawning shells
+
+// 22. Kerberoasting Detection
+event_simpleName=Kerberos EventType=4769
+| AccountName=/*$/
+| group_by(ComputerName, AccountName), count()
+| where(count > 10)
+// Excessive TGS requests
+
+// 23. Unusual Child Processes
+event_simpleName=ProcessRollup2 ParentBaseFileName="svchost.exe"
+| FileName!=/(conhost|taskhostw|dllhost).exe/
+| table ComputerName FileName CommandLine
+// Unexpected svchost children
+
+// 24. DNS Tunneling Suspicion
+event_simpleName=DnsRequest 
+| length(DomainName) > 60
+| DomainName=/([a-z0-9]{32})\./
+| table ComputerName DomainName
+// Long encoded domains
+
+// 25. Clipboard Data Capture
+event_simpleName=ClipboardData
+| ParentBaseFileName!="explorer.exe"
+| table ComputerName UserName ParentBaseFileName
+// Non-explorer clipboard access
+
+// 26. Defender Exclusion Changes
+event_simpleName=RegMod 
+| RegPath=/*\\Exclusions\\*/
+| table ComputerName RegValueName RegValueData
+// Security bypass attempts
+
+// 27. TOR Traffic Detection
+event_simpleName=NetworkConnect 
+| RemotePort=/(9150|9050)/
+| RemoteURL=/.*tor.*/
+| table ComputerName RemoteURL
+// TOR proxy connections
+
+// 28. Process Hollowing
+event_simpleName=ImageLoad 
+| FileName="explorer.exe"
+| ParentBaseFileName="svchost.exe"
+| table ComputerName ParentBaseFileName
+// Common injection technique
+
+// 29. GPO Modification Events
+event_simpleName=RegMod 
+| RegPath=/*GroupPolicy*/
+| table ComputerName RegPath
+// Group Policy changes
+
+// 30. Disguised Executables
+event_simpleName=PeFileWritten 
+| FileName=/\.(exe|dll|scr)\.(txt|jpg|pdf)$/
+| table ComputerName FileName FilePath
+// Double extension files
+
+// 31. Service Binary Tampering
+event_simpleName=RegMod 
+| RegPath=/*\\Services\\*\\ImagePath/
+| table ComputerName RegValueData
+// Service path modifications
+
+// 32. Event Log Clearing
+event_simpleName=ProcessRollup2 
+| CommandLine=/wevtutil\s+cl/
+| table ComputerName CommandLine UserName
+// Log clearing commands
+
+// 33. Large FTP Transfers
+event_simpleName=NetworkConnect RemotePort=21
+| TotalBytesWritten > 100000000
+| table ComputerName RemoteIP TotalBytesWritten
+// 100MB+ FTP uploads
+
+// 34. COM Hijacking
+event_simpleName=RegMod 
+| RegPath=/*\\InprocServer32*/
+| RegValueData!="C:\\Windows"
+| table ComputerName RegValueData
+// Suspicious COM objects
+
+// 35. Remote WMI Execution
+event_simpleName=ProcessRollup2 
+| CommandLine=/win32_process.*call\s+create/
+| table ComputerName CommandLine
+// WMI remote process creation
+
+// 36. Malicious Script Execution
+event_simpleName=ProcessRollup2 
+| FileName=/(wscript|cscript).exe/
+| CommandLine=/\.(vbs|js|hta)/
+| table ComputerName CommandLine
+// Suspicious script execution
+
+// 37. Certificate Store Access
+event_simpleName=RegMod 
+| RegPath=/*\\Crypto\\*/
+| ParentBaseFileName!="lsass.exe"
+| table ComputerName RegPath
+// Certificate theft detection
+
+// 38. Kernel Driver Loading
+event_simpleName=DriverLoad 
+| SignatureStatus!="VALID"
+| table ComputerName FileName SignatureStatus
+// Unsigned drivers
+
+// 39. Persistence via BITS Jobs
+event_simpleName=BitsJobCreated
+| CommandLine=/http|https/
+| table ComputerName CommandLine
+// BITS jobs downloading content
+
+// 40. Shadow Copy Deletion
+event_simpleName=ProcessRollup2 
+| CommandLine=/vssadmin.*delete/
+| table ComputerName CommandLine UserName
+// Ransomware defense evasion
+
+// 41. DNS Exfiltration Patterns
+event_simpleName=DnsRequest 
+| DomainName=/([A-Za-z0-9+]{32,})\./
+| table ComputerName DomainName
+// Base64-like DNS requests
+
+// 42. Anomalous Service Paths
+event_simpleName=ServiceStart 
+| ImagePath=/(\.exe|\.dll)\s+[a-zA-Z]{10,}/
+| table ComputerName ImagePath
+// Services with suspicious parameters
